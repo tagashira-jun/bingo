@@ -1,0 +1,377 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ビンゴ 見せ方の試作</title>
+<!--
+  使い捨ての試作。Q7-2「出た番号の見せ方」を実際の画面で比べるためのもの。本実装には使わない。
+  操作: Space / Enter = 抽選、H = 出た番号の表示切替（切り替えモード時）、P = 試作バーの表示切替、F = 全画面
+  出た番号と設定はブラウザの localStorage に保存し、リロードしても続きから再開できる。
+-->
+<style>
+  :root {
+    --bg: #0f1830;
+    --panel: #17223f;
+    --text: #f5f3ea;
+    --muted: #8f9bbb;
+    --cell: #22304f;
+    --lit: #ffbf3c;
+    --lit-text: #1b1405;
+    --latest: #ff5a4f;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    display: flex; flex-direction: column;
+    background: var(--bg); color: var(--text);
+    font-family: "BIZ UDPGothic", "Yu Gothic UI", "Meiryo", system-ui, sans-serif;
+    overflow: hidden;
+  }
+
+  /* 試作バー（比べるための操作。本番には出さない） */
+  .proto-bar {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 8px 22px;
+    padding: 8px 16px; font-size: 14px;
+    background: #000c; border-bottom: 1px dashed #ffffff40;
+  }
+  .proto-bar.hidden { display: none; }
+  .proto-bar .tag { background: var(--latest); color: #fff; padding: 2px 8px; border-radius: 4px; font-weight: 700; }
+  .proto-bar .group { display: flex; gap: 10px; align-items: center; }
+  .proto-bar .group > span { color: var(--muted); }
+  .proto-bar label { cursor: pointer; }
+  .proto-bar input[type=number] { width: 4.5em; }
+  .proto-bar button { font: inherit; padding: 3px 10px; cursor: pointer; }
+  .proto-bar .keys { color: var(--muted); }
+
+  /* 舞台 */
+  #stage { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr); }
+  #stage.always { grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr); }
+
+  .main {
+    position: relative; min-height: 0;
+    display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: center; gap: 2vw;
+    padding: 3vh 3vw;
+  }
+
+  .machine { display: flex; flex-direction: column; align-items: center; gap: 2vh; min-height: 0; }
+  .machine svg { width: 100%; max-height: 68vh; cursor: pointer; }
+  .draw-btn {
+    font: inherit; font-size: clamp(16px, 2.4vh, 30px); padding: .5em 1.6em;
+    border-radius: 999px; border: 2px solid var(--lit); background: transparent; color: var(--lit); cursor: pointer;
+  }
+  .draw-btn:disabled { opacity: .4; cursor: default; }
+
+  .current { text-align: center; }
+  .current .label { font-size: clamp(16px, 3vh, 36px); color: var(--muted); letter-spacing: .1em; }
+  #currentNumber { font-weight: 800; line-height: 1.05; font-variant-numeric: tabular-nums; font-size: min(30vh, 14vw); }
+  #stage.toggle #currentNumber { font-size: min(44vh, 21vw); }
+  .current .count { font-size: clamp(14px, 2.6vh, 32px); color: var(--muted); }
+
+  .open-history {
+    position: absolute; right: 2vw; bottom: 2vh; display: none;
+    font: inherit; font-size: clamp(14px, 2.2vh, 26px); padding: .4em 1em;
+    border-radius: 8px; border: 1px solid #ffffff40; background: var(--panel); color: var(--text); cursor: pointer;
+  }
+  #stage.toggle .open-history { display: block; }
+
+  /* 出た番号 */
+  #historyPanel { display: flex; flex-direction: column; min-height: 0; background: var(--panel); padding: 2.5vh 1.5vw; }
+  #historyPanel h2 {
+    margin: 0 0 1.5vh; font-size: clamp(16px, 3vh, 36px); font-weight: 700;
+    display: flex; justify-content: space-between; align-items: baseline;
+  }
+  #historyPanel h2 small { font-size: .6em; color: var(--muted); font-weight: 400; }
+  .close-hint { display: none; }
+  #stage.toggle #historyPanel { position: fixed; inset: 0; z-index: 10; display: none; padding: 4vh 4vw; }
+  #stage.toggle #historyPanel.open { display: flex; }
+  #stage.toggle .close-hint { display: inline; }
+
+  #history {
+    flex: 1; min-height: 0; container-type: size;
+    display: grid; gap: .7vh .5vw;
+    grid-template-columns: repeat(var(--cols), minmax(0, 1fr));
+    grid-template-rows: repeat(var(--rows), minmax(0, 1fr));
+  }
+  .cell {
+    display: grid; place-items: center; border-radius: 10px;
+    font-weight: 700; font-variant-numeric: tabular-nums;
+    font-size: min(calc(100cqw / var(--cols) * .46), calc(100cqh / var(--rows) * .55));
+  }
+  #history.board .cell { background: var(--cell); color: #ffffff38; }
+  #history.board .cell.lit { background: var(--lit); color: var(--lit-text); }
+  #history.order .cell { background: var(--lit); color: var(--lit-text); }
+  #history.order .cell.empty { background: transparent; }
+  #history.order .cell.latest,
+  #history.board .cell.latest { background: var(--latest); color: #fff; animation: pulse 1.2s ease-in-out infinite; }
+  @keyframes pulse { 50% { transform: scale(1.08); } }
+
+  /* ガラガラ */
+  #drum { transform-box: view-box; transform-origin: 200px 170px; }
+  #ball { transform-box: view-box; opacity: 0; }
+</style>
+</head>
+<body>
+<div class="proto-bar" id="protoBar">
+  <span class="tag">試作</span>
+  <div class="group">
+    <span>出た番号:</span>
+    <label><input type="radio" name="display" value="always" checked> 常に表示</label>
+    <label><input type="radio" name="display" value="toggle"> 切り替え</label>
+  </div>
+  <div class="group">
+    <span>並べ方:</span>
+    <label><input type="radio" name="arrange" value="order" checked> 出た順</label>
+    <label><input type="radio" name="arrange" value="board"> 番号ボード</label>
+  </div>
+  <label>最大の番号 <input type="number" id="maxInput" min="5" max="150" value="75"></label>
+  <button id="ffBtn">途中まで進める（+20）</button>
+  <button id="resetBtn">リセット</button>
+  <button id="fsBtn">全画面</button>
+  <span class="keys">Space 抽選 ／ H 出た番号（切り替え時）／ P このバー ／ F 全画面</span>
+</div>
+
+<main id="stage" class="always">
+  <section class="main">
+    <div class="machine">
+      <svg id="garagara" viewBox="0 0 400 380" role="img" aria-label="ガラガラ">
+        <g stroke-linecap="round">
+          <line x1="200" y1="170" x2="135" y2="352" stroke="#8a5522" stroke-width="12"/>
+          <line x1="200" y1="170" x2="265" y2="352" stroke="#8a5522" stroke-width="12"/>
+          <rect x="100" y="348" width="200" height="14" rx="6" fill="#8a5522"/>
+          <path d="M245 292 L360 322 L364 306" fill="none" stroke="#d9d2c0" stroke-width="7" stroke-linejoin="round"/>
+        </g>
+        <g id="drum">
+          <polygon id="drumOuter" fill="#c8843a" stroke="#8a5522" stroke-width="6" stroke-linejoin="round"/>
+          <polygon id="drumInner" fill="none" stroke="#00000030" stroke-width="4" stroke-linejoin="round"/>
+          <line x1="200" y1="170" x2="312" y2="104" stroke="#555" stroke-width="9" stroke-linecap="round"/>
+          <circle cx="312" cy="104" r="13" fill="#2b2b2b"/>
+          <circle cx="200" cy="170" r="15" fill="#444"/>
+        </g>
+        <g id="ball">
+          <circle id="ballBody" r="17" fill="#ff5a4f"/>
+          <circle r="11" fill="#fff"/>
+          <text id="ballText" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#222"></text>
+        </g>
+      </svg>
+      <button class="draw-btn" id="drawBtn">抽選する</button>
+    </div>
+    <div class="current">
+      <div class="label">今の番号</div>
+      <div id="currentNumber">–</div>
+      <div class="count" id="count"></div>
+    </div>
+    <button class="open-history" id="openHistoryBtn">出た番号を見る（H）</button>
+  </section>
+  <aside id="historyPanel">
+    <h2>出た番号 <small><span id="historyCount">0</span> 個<span class="close-hint">　H で戻る</span></small></h2>
+    <div id="history" class="order"></div>
+  </aside>
+</main>
+
+<script>
+  const BALL_COLORS = ['#ff5a4f', '#3fa7ff', '#ffd23f', '#5bd17a', '#c879ff'];
+  // GitHub Pages では同じアカウントの全リポジトリが同じオリジンを共有するため、キーに名前空間を付ける
+  const STORAGE_KEY = 'bingo/prototype/display-compare/v1';
+  const state = { max: 75, drawn: [], busy: false };
+  const $ = (id) => document.getElementById(id);
+  const stage = $('stage');
+  const panel = $('historyPanel');
+  const history = $('history');
+  const ball = $('ball');
+
+  const octagon = (r) => Array.from({ length: 8 }, (_, i) => {
+    const a = Math.PI / 8 + i * Math.PI / 4;
+    return `${200 + r * Math.cos(a)},${170 + r * Math.sin(a)}`;
+  }).join(' ');
+  $('drumOuter').setAttribute('points', octagon(105));
+  $('drumInner').setAttribute('points', octagon(84));
+
+  function pick() {
+    const drawn = new Set(state.drawn);
+    const left = [];
+    for (let n = 1; n <= state.max; n++) if (!drawn.has(n)) left.push(n);
+    return left[Math.floor(Math.random() * left.length)];
+  }
+
+  // 抽選中の番号は保存済みだが、球が出るまでは画面に出さない
+  const shownDrawn = () => (state.busy ? state.drawn.slice(0, -1) : state.drawn);
+
+  function save() {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({
+        max: state.max, drawn: state.drawn, display: stage.className, arrange: history.className,
+      }));
+    } catch {
+      // 保存できない環境（プライベートブラウズ等）では保存せずに続ける
+    }
+  }
+
+  function load() {
+    let saved;
+    try {
+      saved = JSON.parse(localStorage.getItem(STORAGE_KEY));
+    } catch {
+      return;
+    }
+    if (!saved) return;
+    const { max, drawn } = saved;
+    if (!Number.isInteger(max) || max < 5 || max > 150 || !Array.isArray(drawn)) return;
+    if (drawn.some((n) => !Number.isInteger(n) || n < 1 || n > max) || new Set(drawn).size !== drawn.length) return;
+    state.max = max;
+    state.drawn = drawn;
+    if (['always', 'toggle'].includes(saved.display)) stage.className = saved.display;
+    if (['order', 'board'].includes(saved.arrange)) history.className = saved.arrange;
+  }
+
+  function render() {
+    const shown = shownDrawn();
+    const done = shown.length >= state.max;
+    $('currentNumber').textContent = shown.at(-1) ?? '–';
+    $('count').textContent = `${shown.length} / ${state.max} 個`;
+    $('historyCount').textContent = shown.length;
+    $('drawBtn').disabled = done || state.busy;
+    $('drawBtn').textContent = done ? 'すべて出ました' : '抽選する';
+    renderHistory();
+  }
+
+  function renderHistory() {
+    // 横に置くときは 10 列、全画面に切り替えたときは 15 列
+    const cols = stage.classList.contains('toggle') ? 15 : 10;
+    history.style.setProperty('--cols', cols);
+    history.style.setProperty('--rows', Math.ceil(state.max / cols));
+    const board = history.classList.contains('board');
+    const shown = shownDrawn();
+    const last = shown.at(-1);
+    const drawn = new Set(shown);
+    const cells = [];
+    for (let i = 0; i < state.max; i++) {
+      const cell = document.createElement('div');
+      cell.className = 'cell';
+      if (board) {
+        const n = i + 1;
+        cell.textContent = n;
+        if (drawn.has(n)) cell.classList.add('lit');
+        if (n === last) cell.classList.add('latest');
+      } else if (i < shown.length) {
+        cell.textContent = shown[i];
+        if (i === shown.length - 1) cell.classList.add('latest');
+      } else {
+        cell.classList.add('empty');
+      }
+      cells.push(cell);
+    }
+    history.replaceChildren(...cells);
+  }
+
+  function hideBall() {
+    ball.getAnimations().forEach((a) => a.cancel());
+    ball.style.opacity = 0;
+  }
+
+  async function draw() {
+    if (state.busy || state.drawn.length >= state.max) return;
+    // 先に保存しておき、演出中にリロードしても引き直しにならないようにする
+    const n = pick();
+    state.drawn.push(n);
+    state.busy = true;
+    save();
+    panel.classList.remove('open');
+    hideBall();
+    render();
+    await $('drum').animate(
+      [{ transform: 'rotate(0deg)' }, { transform: 'rotate(720deg)' }],
+      { duration: 1400, easing: 'cubic-bezier(.45, 0, .25, 1)' }
+    ).finished;
+    $('ballText').textContent = n;
+    $('ballBody').setAttribute('fill', BALL_COLORS[n % BALL_COLORS.length]);
+    await ball.animate([
+      { transform: 'translate(245px, 255px) scale(.5)', opacity: 0 },
+      { transform: 'translate(258px, 276px) scale(1)', opacity: 1, offset: .2 },
+      { transform: 'translate(300px, 289px)', opacity: 1, offset: .55 },
+      { transform: 'translate(338px, 299px)', opacity: 1, offset: .8 },
+      { transform: 'translate(345px, 294px)', opacity: 1, offset: .9 },
+      { transform: 'translate(342px, 300px)', opacity: 1 },
+    ], { duration: 800, easing: 'ease-out', fill: 'forwards' }).finished;
+    state.busy = false;
+    render();
+    $('currentNumber').animate(
+      [{ transform: 'scale(.3)', opacity: 0 }, { transform: 'scale(1.15)', opacity: 1, offset: .6 }, { transform: 'scale(1)' }],
+      { duration: 450, easing: 'ease-out' }
+    );
+  }
+
+  function fastForward(count) {
+    if (state.busy) return;
+    for (let i = 0; i < count && state.drawn.length < state.max; i++) state.drawn.push(pick());
+    save();
+    hideBall();
+    render();
+  }
+
+  function reset() {
+    if (state.busy) return;
+    state.drawn = [];
+    save();
+    hideBall();
+    render();
+  }
+
+  const confirmReset = () => state.drawn.length === 0 || confirm('出た番号をすべて消して、最初からやり直しますか？');
+
+  function toggleHistory() {
+    if (stage.classList.contains('toggle')) panel.classList.toggle('open');
+  }
+
+  function toggleFullscreen() {
+    if (document.fullscreenElement) document.exitFullscreen();
+    else document.documentElement.requestFullscreen();
+  }
+
+  document.querySelectorAll('input[name=display]').forEach((r) => r.addEventListener('change', (e) => {
+    stage.className = e.target.value;
+    panel.classList.remove('open');
+    save();
+    renderHistory();
+    e.target.blur();
+  }));
+  document.querySelectorAll('input[name=arrange]').forEach((r) => r.addEventListener('change', (e) => {
+    history.className = e.target.value;
+    save();
+    renderHistory();
+    e.target.blur();
+  }));
+  $('maxInput').addEventListener('change', (e) => {
+    const v = Math.min(150, Math.max(5, parseInt(e.target.value, 10) || 75));
+    if (state.busy || v === state.max || !confirmReset()) {
+      e.target.value = state.max;
+      return;
+    }
+    e.target.value = v;
+    state.max = v;
+    reset();
+  });
+  $('ffBtn').addEventListener('click', (e) => { fastForward(20); e.currentTarget.blur(); });
+  $('resetBtn').addEventListener('click', (e) => { if (confirmReset()) reset(); e.currentTarget.blur(); });
+  $('fsBtn').addEventListener('click', (e) => { toggleFullscreen(); e.currentTarget.blur(); });
+  $('drawBtn').addEventListener('click', (e) => { draw(); e.currentTarget.blur(); });
+  $('garagara').addEventListener('click', draw);
+  $('openHistoryBtn').addEventListener('click', (e) => { toggleHistory(); e.currentTarget.blur(); });
+
+  document.addEventListener('keydown', (e) => {
+    if (e.target.matches('input[type=number]')) return;
+    if (e.code === 'Space' || e.code === 'Enter') { e.preventDefault(); draw(); }
+    else if (e.key === 'h' || e.key === 'H') toggleHistory();
+    else if (e.key === 'Escape') panel.classList.remove('open');
+    else if (e.key === 'p' || e.key === 'P') $('protoBar').classList.toggle('hidden');
+    else if (e.key === 'f' || e.key === 'F') toggleFullscreen();
+  });
+
+  load();
+  $('maxInput').value = state.max;
+  document.querySelector(`input[name=display][value=${stage.className}]`).checked = true;
+  document.querySelector(`input[name=arrange][value=${history.className}]`).checked = true;
+  render();
+</script>
+</body>
+</html>
