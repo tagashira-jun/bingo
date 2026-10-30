@@ -7,7 +7,9 @@
 <!--
   使い捨ての試作。Q7-2「出た番号の見せ方」を実際の画面で比べるためのもの。本実装には使わない。
   操作: Space / Enter = 抽選、H = 出た番号の表示切替（切り替えモード時）、P = 試作バーの表示切替、F = 全画面
+        G = 景品くじとの切り替え、S = グレード設定（景品くじの画面で）
   出た番号と設定はブラウザの localStorage に保存し、リロードしても続きから再開できる。
+  景品くじは、ビンゴになった人がおみくじ筒を振ってグレード（A賞・B賞…）を引く。グレードの数・当たりやすさ・引く対象は設定で変えられる。
 -->
 <style>
   :root {
@@ -68,11 +70,14 @@
   #stage.toggle #currentNumber { font-size: min(44vh, 21vw); }
   .current .count { font-size: clamp(14px, 2.6vh, 32px); color: var(--muted); }
 
-  .open-history {
-    position: absolute; right: 2vw; bottom: 2vh; display: none;
+  .corner-btn {
+    position: absolute; bottom: 2vh;
     font: inherit; font-size: clamp(14px, 2.2vh, 26px); padding: .4em 1em;
     border-radius: 8px; border: 1px solid #ffffff40; background: var(--panel); color: var(--text); cursor: pointer;
   }
+  .corner-btn.left { left: 2vw; }
+  .corner-btn.right { right: 2vw; }
+  .open-history { display: none; }
   #stage.toggle .open-history { display: block; }
 
   /* 出た番号 */
@@ -109,6 +114,35 @@
   /* ガラガラ */
   #drum { transform-box: view-box; transform-origin: 200px 170px; }
   #ball { transform-box: view-box; opacity: 0; }
+
+  /* 景品くじ（G でビンゴの画面と切り替える） */
+  #prizeScreen {
+    display: none; position: relative; flex: 1; min-height: 0;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: center; gap: 2vw;
+    padding: 3vh 3vw;
+  }
+  body.prize-mode #stage { display: none; }
+  body.prize-mode #prizeScreen { display: grid; }
+  #prizeResult { font-weight: 800; line-height: 1.05; font-size: min(30vh, 14vw); }
+  #tube { transform-box: view-box; transform-origin: 150px 180px; }
+  #stick { transform-box: view-box; opacity: 0; }
+
+  #gradePanel {
+    position: absolute; top: 2vh; right: 2vw; z-index: 5; max-height: 80vh; overflow: auto;
+    padding: 16px 20px; font-size: 16px;
+    background: var(--panel); border: 1px solid #ffffff30; border-radius: 12px; box-shadow: 0 10px 30px #0008;
+  }
+  #gradePanel.hidden { display: none; }
+  #gradePanel h3 { margin: 0 0 10px; font-size: 18px; display: flex; justify-content: space-between; align-items: center; gap: 24px; }
+  #gradePanel table { border-collapse: collapse; }
+  #gradePanel th, #gradePanel td { padding: 4px 10px; text-align: center; }
+  #gradePanel th { color: var(--muted); font-weight: 400; font-size: 14px; }
+  #gradePanel tr.off td:not(:first-child) { opacity: .4; }
+  #gradePanel input { font: inherit; }
+  #gradePanel input[type=number] { width: 4.5em; }
+  #gradePanel input[type=checkbox] { width: 18px; height: 18px; cursor: pointer; }
+  #gradePanel .actions { display: flex; gap: 8px; margin-top: 10px; }
+  #gradePanel button { font: inherit; font-size: 14px; padding: 3px 10px; cursor: pointer; }
 </style>
 </head>
 <body>
@@ -128,7 +162,7 @@
   <button id="ffBtn">途中まで進める（+20）</button>
   <button id="resetBtn">リセット</button>
   <button id="fsBtn">全画面</button>
-  <span class="keys">Space 抽選 ／ H 出た番号（切り替え時）／ P このバー ／ F 全画面</span>
+  <span class="keys">Space 抽選 ／ H 出た番号（切り替え時）／ G 景品くじ ／ S グレード設定 ／ P このバー ／ F 全画面</span>
 </div>
 
 <main id="stage" class="always">
@@ -161,13 +195,56 @@
       <div id="currentNumber">–</div>
       <div class="count" id="count"></div>
     </div>
-    <button class="open-history" id="openHistoryBtn">出た番号を見る（H）</button>
+    <button class="corner-btn left" id="openPrizeBtn">景品くじ（G）</button>
+    <button class="corner-btn right open-history" id="openHistoryBtn">出た番号を見る（H）</button>
   </section>
   <aside id="historyPanel">
     <h2>出た番号 <small><span id="historyCount">0</span> 個<span class="close-hint">　H で戻る</span></small></h2>
     <div id="history" class="order"></div>
   </aside>
 </main>
+
+<section id="prizeScreen" aria-label="景品くじ">
+  <div class="machine">
+    <svg id="omikuji" viewBox="0 0 300 420" role="img" aria-label="おみくじ筒">
+      <!-- 棒は筒の後ろに描き、筒を逆さにしたあと穴から下へ出す -->
+      <g id="stick">
+        <rect x="143" y="140" width="14" height="150" rx="3" fill="#e9d6a8" stroke="#a88a4e" stroke-width="2"/>
+        <rect x="134" y="248" width="32" height="42" rx="4" fill="#fff" stroke="#a88a4e" stroke-width="2"/>
+        <text id="stickText" x="150" y="270" text-anchor="middle" dominant-baseline="central" font-size="26" font-weight="800" fill="#c0392b"></text>
+      </g>
+      <g id="tube">
+        <rect x="95" y="60" width="110" height="240" rx="10" fill="#c0392b" stroke="#7a1f16" stroke-width="6"/>
+        <rect x="95" y="60" width="110" height="28" rx="8" fill="#e0b04a" stroke="#7a1f16" stroke-width="5"/>
+        <rect x="95" y="272" width="110" height="28" rx="8" fill="#e0b04a" stroke="#7a1f16" stroke-width="5"/>
+        <circle cx="150" cy="74" r="8" fill="#2b1a10"/>
+        <rect x="122" y="112" width="56" height="140" rx="4" fill="#f5f3ea"/>
+        <text x="150" y="182" text-anchor="middle" font-size="40" font-weight="800" fill="#7a1f16">
+          <tspan x="150" dy="-12">く</tspan><tspan x="150" dy="48">じ</tspan>
+        </text>
+      </g>
+    </svg>
+    <button class="draw-btn" id="prizeBtn">くじを引く</button>
+  </div>
+  <div class="current">
+    <div class="label">景品くじ</div>
+    <div id="prizeResult">–</div>
+    <div class="count" id="prizeNote"></div>
+  </div>
+  <button class="corner-btn left" id="backBtn">ビンゴに戻る（G）</button>
+  <button class="corner-btn right" id="settingsBtn">グレード設定（S）</button>
+  <div id="gradePanel" class="hidden">
+    <h3>グレード設定 <button id="closeSettingsBtn">閉じる</button></h3>
+    <table>
+      <thead><tr><th>引く</th><th>グレード</th><th>当たりやすさ</th><th>確率</th></tr></thead>
+      <tbody id="gradeRows"></tbody>
+    </table>
+    <div class="actions">
+      <button id="addGradeBtn">＋ グレードを追加</button>
+      <button id="removeGradeBtn">－ 最後のグレードを削除</button>
+    </div>
+  </div>
+</section>
 
 <script>
   const BALL_COLORS = ['#ff5a4f', '#3fa7ff', '#ffd23f', '#5bd17a', '#c879ff'];
@@ -323,6 +400,132 @@
     if (stage.classList.contains('toggle')) panel.classList.toggle('open');
   }
 
+  // ---- 景品くじ ----
+  // グレードは A から順に並ぶ。名前は位置で決まるので、保存するのは当たりやすさと引く対象かどうかだけ
+  const PRIZE_KEY = 'bingo/prototype/prize-draw/v1';
+  const GRADE_COLORS = ['#ffbf3c', '#d7dee8', '#e0955a', '#5bd17a', '#3fa7ff', '#c879ff', '#ff7eb6'];
+  const MAX_GRADES = 26;
+  const prize = { grades: [{ weight: 1, enabled: true }, { weight: 3, enabled: true }, { weight: 6, enabled: true }], busy: false };
+  const gradePanel = $('gradePanel');
+  const tube = $('tube');
+  const stick = $('stick');
+
+  const gradeName = (i) => `${String.fromCharCode(65 + i)}賞`;
+  const drawable = () => prize.grades.map((g, i) => ({ ...g, i })).filter((g) => g.enabled && g.weight > 0);
+
+  function savePrize() {
+    try {
+      localStorage.setItem(PRIZE_KEY, JSON.stringify({ grades: prize.grades }));
+    } catch {
+      // 保存できない環境では保存せずに続ける
+    }
+  }
+
+  function loadPrize() {
+    let saved;
+    try {
+      saved = JSON.parse(localStorage.getItem(PRIZE_KEY));
+    } catch {
+      return;
+    }
+    const grades = saved?.grades;
+    if (!Array.isArray(grades) || grades.length < 1 || grades.length > MAX_GRADES) return;
+    if (grades.some((g) => !Number.isInteger(g?.weight) || g.weight < 0 || g.weight > 999 || typeof g.enabled !== 'boolean')) return;
+    prize.grades = grades;
+  }
+
+  function pickGrade() {
+    const pool = drawable();
+    let r = Math.random() * pool.reduce((sum, g) => sum + g.weight, 0);
+    for (const g of pool) {
+      r -= g.weight;
+      if (r < 0) return g.i;
+    }
+    return pool.at(-1).i;
+  }
+
+  function renderPrize() {
+    const pool = drawable();
+    const total = pool.reduce((sum, g) => sum + g.weight, 0);
+    $('prizeBtn').disabled = prize.busy || pool.length === 0;
+    $('prizeNote').textContent = pool.length
+      ? `引く対象: ${pool.map((g) => String.fromCharCode(65 + g.i)).join('・')}`
+      : '引けるグレードがありません（S で設定）';
+    const rows = prize.grades.map((g, i) => {
+      const tr = document.createElement('tr');
+      if (!g.enabled) tr.className = 'off';
+      const rate = g.enabled && total ? `${Math.round((g.weight / total) * 1000) / 10}%` : '–';
+      tr.innerHTML = `<td><input type="checkbox" ${g.enabled ? 'checked' : ''}></td>`
+        + `<td style="color:${GRADE_COLORS[i % GRADE_COLORS.length]};font-weight:700">${gradeName(i)}</td>`
+        + `<td><input type="number" min="0" max="999" value="${g.weight}"></td><td>${rate}</td>`;
+      tr.querySelector('input[type=checkbox]').addEventListener('change', (e) => {
+        g.enabled = e.target.checked;
+        savePrize();
+        renderPrize();
+      });
+      tr.querySelector('input[type=number]').addEventListener('change', (e) => {
+        g.weight = Math.min(999, Math.max(0, parseInt(e.target.value, 10) || 0));
+        savePrize();
+        renderPrize();
+      });
+      return tr;
+    });
+    $('gradeRows').replaceChildren(...rows);
+    $('addGradeBtn').disabled = prize.grades.length >= MAX_GRADES;
+    $('removeGradeBtn').disabled = prize.grades.length <= 1;
+  }
+
+  function resetTube() {
+    [tube, stick].forEach((el) => el.getAnimations().forEach((a) => a.cancel()));
+    stick.style.opacity = 0;
+  }
+
+  async function drawPrize() {
+    if (prize.busy || drawable().length === 0) return;
+    const i = pickGrade();
+    prize.busy = true;
+    gradePanel.classList.add('hidden');
+    resetTube();
+    const result = $('prizeResult');
+    result.textContent = '?';
+    result.style.color = 'var(--muted)';
+    renderPrize();
+    // 筒を左右に振ってから逆さにする
+    const swings = [{ transform: 'rotate(0deg)' }];
+    for (let k = 1; k <= 8; k++) {
+      const dir = k % 2 ? -1 : 1;
+      swings.push({ transform: `translateX(${dir * 10}px) rotate(${dir * 16}deg)` });
+    }
+    swings.push({ transform: 'rotate(0deg)' });
+    await tube.animate(swings, { duration: 1600, easing: 'ease-in-out' }).finished;
+    await tube.animate(
+      [{ transform: 'rotate(0deg)' }, { transform: 'rotate(180deg)' }],
+      { duration: 550, easing: 'ease-in-out', fill: 'forwards' }
+    ).finished;
+    $('stickText').textContent = String.fromCharCode(65 + i);
+    stick.style.opacity = 1;
+    await stick.animate([
+      { transform: 'translateY(0)' },
+      { transform: 'translateY(118px)', offset: .75 },
+      { transform: 'translateY(108px)' },
+    ], { duration: 700, easing: 'ease-out', fill: 'forwards' }).finished;
+    prize.busy = false;
+    result.textContent = gradeName(i);
+    result.style.color = GRADE_COLORS[i % GRADE_COLORS.length];
+    renderPrize();
+    result.animate(
+      [{ transform: 'scale(.3)', opacity: 0 }, { transform: 'scale(1.15)', opacity: 1, offset: .6 }, { transform: 'scale(1)' }],
+      { duration: 450, easing: 'ease-out' }
+    );
+  }
+
+  function togglePrize() {
+    if (prize.busy) return;
+    document.body.classList.toggle('prize-mode');
+    panel.classList.remove('open');
+    gradePanel.classList.add('hidden');
+  }
+
   function toggleFullscreen() {
     if (document.fullscreenElement) document.exitFullscreen();
     else document.documentElement.requestFullscreen();
@@ -357,16 +560,39 @@
   $('drawBtn').addEventListener('click', (e) => { draw(); e.currentTarget.blur(); });
   $('garagara').addEventListener('click', draw);
   $('openHistoryBtn').addEventListener('click', (e) => { toggleHistory(); e.currentTarget.blur(); });
+  $('openPrizeBtn').addEventListener('click', (e) => { togglePrize(); e.currentTarget.blur(); });
+  $('backBtn').addEventListener('click', (e) => { togglePrize(); e.currentTarget.blur(); });
+  $('prizeBtn').addEventListener('click', (e) => { drawPrize(); e.currentTarget.blur(); });
+  $('omikuji').addEventListener('click', drawPrize);
+  $('settingsBtn').addEventListener('click', (e) => { gradePanel.classList.toggle('hidden'); e.currentTarget.blur(); });
+  $('closeSettingsBtn').addEventListener('click', (e) => { gradePanel.classList.add('hidden'); e.currentTarget.blur(); });
+  $('addGradeBtn').addEventListener('click', (e) => {
+    if (prize.grades.length < MAX_GRADES) prize.grades.push({ weight: prize.grades.at(-1).weight, enabled: true });
+    savePrize();
+    renderPrize();
+    e.currentTarget.blur();
+  });
+  $('removeGradeBtn').addEventListener('click', (e) => {
+    if (prize.grades.length > 1) prize.grades.pop();
+    savePrize();
+    renderPrize();
+    e.currentTarget.blur();
+  });
 
   document.addEventListener('keydown', (e) => {
-    if (e.target.matches('input[type=number]')) return;
-    if (e.code === 'Space' || e.code === 'Enter') { e.preventDefault(); draw(); }
-    else if (e.key === 'h' || e.key === 'H') toggleHistory();
-    else if (e.key === 'Escape') panel.classList.remove('open');
+    if (e.target.matches('input')) return;
+    const inPrize = document.body.classList.contains('prize-mode');
+    if (e.code === 'Space' || e.code === 'Enter') { e.preventDefault(); if (inPrize) drawPrize(); else draw(); }
+    else if (e.key === 'g' || e.key === 'G') togglePrize();
+    else if (inPrize && (e.key === 's' || e.key === 'S')) gradePanel.classList.toggle('hidden');
+    else if (!inPrize && (e.key === 'h' || e.key === 'H')) toggleHistory();
+    else if (e.key === 'Escape') { panel.classList.remove('open'); gradePanel.classList.add('hidden'); }
     else if (e.key === 'p' || e.key === 'P') $('protoBar').classList.toggle('hidden');
     else if (e.key === 'f' || e.key === 'F') toggleFullscreen();
   });
 
+  loadPrize();
+  renderPrize();
   load();
   $('maxInput').value = state.max;
   document.querySelector(`input[name=display][value=${stage.className}]`).checked = true;
